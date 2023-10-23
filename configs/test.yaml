@@ -4,7 +4,6 @@ exp_name: test
 pretrained_model_path: /home/nfs/wyy/models/sd-image-variations-diffusers
 data_root_dir: /home/nfs/wyy/data/deepfashion/Data
 seed: 42
-image_size: [256, 256]
 
 eval_scheduler: ddim
 eval_image_num: 4
@@ -29,4 +28,4 @@ mixed_precision: 'fp16' #'no','fp16','bf16 or 'fp8'
 enable_xformers_memory_efficient_attention: True
 gradient_checkpointing: True
 gradient_accumulate_steps: 2
-num_workers: 4
+num_workers: 32

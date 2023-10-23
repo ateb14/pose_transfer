@@ -603,26 +603,29 @@ class Net(nn.Module):
         self._progress_bar_config = kwargs
 
 if __name__ == '__main__':
-    if __name__ == '__main__':
-        # parse args
-        import argparse, os
-        from yaml import safe_load
-        from accelerate.utils import set_seed
-        parser = argparse.ArgumentParser()
-        parser.add_argument('--config', type=str, default='configs/test.yaml')
-        args = parser.parse_args()
-        with open(args.config, 'r') as f:
-            yaml_args = safe_load(f)
-        parser.set_defaults(**yaml_args)
-        args = parser.parse_args()
-        if not hasattr(args, 'num_iters'):
-            args.num_iters = 200
-        set_seed(args.seed)
+    # parse args
+    import argparse, os
+    from yaml import safe_load
+    from accelerate.utils import set_seed
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str, default='configs/test.yaml')
+    args = parser.parse_args()
+    with open(args.config, 'r') as f:
+        yaml_args = safe_load(f)
+    parser.set_defaults(**yaml_args)
+    args = parser.parse_args()
+    if not hasattr(args, 'num_iters'):
+        args.num_iters = 200
+    set_seed(args.seed)
 
-        device = 'cuda:1'
-        model = Net(args).to(device)
-        print(f'UNet conv_in',model.unet.conv_in)
+    device = 'cuda:1'
+    model = Net(args).to(device)
+    print(f'UNet conv_in',model.unet.conv_in)
 
-        image = torch.zeros((1,3,256,256)).to(device)
-        inputs = {'image': image, 'image_encoder_preprocessed_reference_foreground': torch.zeros((1,3,224,224)).to(device)}
-        print(model(inputs)['loss_total'])
+    image = torch.zeros((1,3,256,256)).to(device)
+    inputs = {'source_image': image, 
+                'target_image': image.copy(),
+                'target_pose_coordinate': torch.zeros((1,3,256,256)).to(device),
+                'image_encoder_preprocessed_source_image': torch.zeros((1,3,224,224)).to(device)
+                }
+    print(model(inputs)['loss_total'])

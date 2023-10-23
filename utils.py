@@ -71,16 +71,16 @@ def draw_bodypose(canvas: np.ndarray, keypoints) -> np.ndarray:
 
     return canvas
 
-def stitch_to_square_middle(images):
+def stitch_to_square_middle(images, background_color=0):
     image_h, image_w = images.shape[:2]
     image_square_len = max(image_h, image_w)
     pad_h = (image_square_len - image_h) // 2
     pad_w = (image_square_len - image_w) // 2
     if images.ndim == 3:
-        squared_images = np.zeros((image_square_len, image_square_len, images.shape[-1]), dtype='uint8')
+        squared_images = np.ones((image_square_len, image_square_len, images.shape[-1]), dtype='uint8') * background_color
         squared_images[pad_h : pad_h+image_h, pad_w : pad_w+image_w, :] = images
     elif images.ndim == 2:
-        squared_images = np.zeros((image_square_len, image_square_len), dtype='uint8')
+        squared_images = np.ones((image_square_len, image_square_len), dtype='uint8') * background_color
         squared_images[pad_h : pad_h+image_h, pad_w : pad_w+image_w] = images
     else:
         assert False, f'Dimension of input images is {images.ndim}, but only 3 and 2 are supported'
