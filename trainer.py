@@ -8,6 +8,7 @@ from tqdm import tqdm
 import numpy as np
 import cv2
 import os
+from utils import setup_logging
 
 logging.basicConfig(level=logging.INFO)
 logger = get_logger(__name__)
@@ -191,74 +192,7 @@ class Trainer():
         self.model.train()
         
 
-class Evaler():
-    def __init__(self, args, model, dataset_eval):
-        self.args = args
-        self.model = model
-        self.dataset_eval = dataset_eval
-        self.cur_epoch = 0
-        self.cur_global_step = 0
-
-        self.build_dataloader()
-
-        self.load_state(args.load_state_exp_name, args.load_state_epoch)
-        self.build_accelerator()
-        logger.info('Load state from experiment {}, epoch {}'.format(args.load_state_exp_name, args.load_state_epoch))
-
-
-    def build_accelerator(self):
-        self.accelerator = Accelerator(mixed_precision=self.args.mixed_precision)
-        self.model, self.dataloader_eval \
-         = self.accelerator.prepare(self.model, self.dataloader_eval)
-    
-    def build_dataloader(self):
-        self.dataloader_eval = DataLoader(self.dataset_eval, batch_size=self.args.eval_batch_size, pin_memory=True, \
-                                          shuffle=True, num_workers=self.args.num_workers)
-
-    def load_state(self, exp_name, epoch):
-        '''
-        Load state from a checkpoint before constructing the accelerator.
-        '''
-        path = os.path.join(self.args.exp_root_dir, 'ckpts', exp_name, f'epoch_{epoch}.pth')
-        assert os.path.exists(path), f'Checkpoint {path} does not exist.'
-
-        checkpoint = torch.load(path, map_location=torch.device('cpu'))
-        self.cur_epoch = checkpoint['epoch'] + 1
-        self.cur_global_step = checkpoint['global_step']
-        # update partial states
-        self.model.load_state_dict(checkpoint['model_state'], strict=False)
-
-
-    @torch.no_grad()
-    def eval(self, use_tqdm=True, inner_collect_fn=None):
-        logger.info(f'Start evaluation at global step {self.cur_global_step}')
-        self.model.eval()
-        pbar = tqdm(total=self.args.eval_image_num, desc='Eval per epoch', disable=not use_tqdm, \
-                    iterable=enumerate(self.dataloader_eval))
-
-        for step, batch in pbar:
-            if step >= self.args.eval_image_num:
-                break
-            pred_image = self.model(batch)['logits_imgs']
-            pred_image = (pred_image*255).cpu().numpy().round().astype('uint8')
-            pred_image = pred_image.transpose((0,2,3,1))
-
-            # batch['reference_foreground].shape == (bs,h,w,c) as a numpy format image, though it'a a tensor
-            ref_image = batch['reference_foreground']
-            ref_image = (ref_image*255).cpu().numpy().astype('uint8').transpose((0,2,3,1))
-            img = np.concatenate([pred_image, ref_image], axis=2)
-
-            # batch['reference_background].shape == (bs,c,h,w) as a tensor format image
-            ref_bg = batch['reference_background'].permute(0,2,3,1)
-            ref_bg = (ref_bg*255).cpu().numpy().round().astype('uint8')
-
-            img = np.concatenate([pred_image, ref_image, ref_bg], axis=2)
-            
-            os.makedirs(os.path.join(self.args.exp_root_dir, 'results', self.args.exp_name, f'global_step_{self.cur_global_step}'), exist_ok=True)
-            for i in range(img.shape[0]):
-                cv2.imwrite(os.path.join(self.args.exp_root_dir, 'results', self.args.exp_name, f'global_step_{self.cur_global_step}',f'eval_{step * self.args.eval_batch_size  + i}.jpg'), img[i])
-     
-
+        
 class WarmupLinearLR(torch.optim.lr_scheduler._LRScheduler):
     def __init__(
         self,

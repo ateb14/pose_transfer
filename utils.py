@@ -2,7 +2,13 @@ import torch.nn.functional as F
 import numpy as np
 import cv2
 import math
+import os
 
+def setup_logging(run_name, root_dir):
+    os.makedirs(os.path.join(root_dir, "ckpts", run_name), exist_ok=True)
+    os.makedirs(os.path.join(root_dir, "models", run_name), exist_ok=True)
+    os.makedirs(os.path.join(os.path.join(root_dir, "results"), run_name), exist_ok=True)
+    os.makedirs(os.path.join(os.path.join(root_dir, "logs"), run_name), exist_ok=True)
 
 def draw_pose(keypoints,H,W):
     canvas = np.zeros(shape=(H, W, 3), dtype=np.uint8)

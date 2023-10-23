@@ -34,6 +34,7 @@ if __name__ == '__main__':
     import numpy as np
     image = (255*np.random.rand(256, 256, 3)).astype(np.uint8)
     image = preprocessor(image).to('cuda')
+    print(image.shape)
     output = model(image.unsqueeze(0), is_training=True)
 
     print(output.keys())

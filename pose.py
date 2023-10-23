@@ -10,7 +10,11 @@ os.makedirs('/home/nfs/wyy/data/deepfashion/Data/train_lst_512_pose', exist_ok=T
 os.makedirs('/home/nfs/wyy/data/deepfashion/Data/test_lst_512_pose', exist_ok=True)
 
 def detect(path,pose_path):
-    for _, name in tqdm(enumerate(os.listdir(path)), total=len(os.listdir(path))):
+    for cnt, name in tqdm(enumerate(os.listdir(path)), total=len(os.listdir(path))):
+        if cnt < 40883:
+            continue
+        if name.split('.')[-1] != 'png':
+            continue
         image = cv2.imread(os.path.join(path, name))
         pose_map, pose = detector(image,output_type='np')
         pose_map = cv2.resize(pose_map, (image.shape[1], image.shape[0]))

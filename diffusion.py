@@ -5,12 +5,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
-from diffusers.models import AutoencoderKL, UNet2DConditionModel
+from diffusers.models import AutoencoderKL
 from diffusers.schedulers import DDIMScheduler, DDPMScheduler, PNDMScheduler
 from diffusers.utils import PIL_INTERPOLATION
 from diffusers.utils.import_utils import is_xformers_available
 import PIL.Image
-from .dinov2 import get_dinov2_model
+from dinov_2 import get_dinov2_model
+from UNet2D import UNet2DConditionModel
 
 
 class Net(nn.Module):
@@ -64,6 +65,7 @@ class Net(nn.Module):
         self.unet = UNet2DConditionModel.from_pretrained(
             args.pretrained_model_path, subfolder='unet'
         )
+        self.unet.set_conv_in(in_channels=7)
         print('UNet loaded')
 
         if self.args.enable_xformers_memory_efficient_attention:
@@ -102,6 +104,7 @@ class Net(nn.Module):
         # freeze unet
         self.unet.train()
         self.unet.requires_grad_(False)
+        self.unet.conv_in.requires_grad_(True) # conv_in is modified
         if self.args.unet_trainable_module == 'all':
             for name, para in self.unet.named_parameters():
                 para.requires_grad_(True)
@@ -418,10 +421,6 @@ class Net(nn.Module):
     def forward_train(self, inputs):
         image = inputs['image'].to(self.device) # (bs, c, h, w)
         img_encoder_pre_ref_fg = inputs['image_encoder_preprocessed_reference_foreground'].to(self.device)
-        ref_fg = inputs['reference_foreground'].to(self.device)
-        ref_bg = inputs['reference_background'].to(self.device)
-        is_video = inputs['is_video'].to(self.device)
-        mask = inputs['mask'].to(self.device)
         bs = image.shape[0]
 
         # 1.encode the reference image for cross attention
@@ -442,8 +441,12 @@ class Net(nn.Module):
         noise = torch.randn_like(latents)
 
         # 3.sample the timesteps and do the forward diffusion process
-        timesteps = self.sample_timesteps(bs, is_video)
+        timesteps = self.sample_timesteps(bs)
         noisy_latents = self.train_noise_scheduler.add_noise(latents, noise, timesteps)
+
+        # 4. concat pose and noisy image
+        noisy_latents = torch.concat([noisy_latents, torch.ones(bs,3,32,32).to(self.device)], dim=1)
+        print(f'noisy_latents shape: {noisy_latents.shape}')
 
         # 5. main unet
         pred = self.unet(
@@ -598,3 +601,28 @@ class Net(nn.Module):
 
     def set_progress_bar_config(self, **kwargs):
         self._progress_bar_config = kwargs
+
+if __name__ == '__main__':
+    if __name__ == '__main__':
+        # parse args
+        import argparse, os
+        from yaml import safe_load
+        from accelerate.utils import set_seed
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--config', type=str, default='configs/test.yaml')
+        args = parser.parse_args()
+        with open(args.config, 'r') as f:
+            yaml_args = safe_load(f)
+        parser.set_defaults(**yaml_args)
+        args = parser.parse_args()
+        if not hasattr(args, 'num_iters'):
+            args.num_iters = 200
+        set_seed(args.seed)
+
+        device = 'cuda:1'
+        model = Net(args).to(device)
+        print(f'UNet conv_in',model.unet.conv_in)
+
+        image = torch.zeros((1,3,256,256)).to(device)
+        inputs = {'image': image, 'image_encoder_preprocessed_reference_foreground': torch.zeros((1,3,224,224)).to(device)}
+        print(model(inputs)['loss_total'])

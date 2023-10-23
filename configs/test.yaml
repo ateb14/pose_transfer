@@ -1,0 +1,32 @@
+exp_root_dir: /home/wyy/exp/pose_transfer
+exp_name: test
+
+pretrained_model_path: /home/nfs/wyy/models/sd-image-variations-diffusers
+data_root_dir: /home/nfs/wyy/data/deepfashion/Data
+seed: 42
+image_size: [256, 256]
+
+eval_scheduler: ddim
+eval_image_num: 4
+
+image_encoder: dinov2
+refer_sdvae: True
+unet_trainable_module: cross_attn # transformer, cross_attn, self_cross_attn, all
+ref_encoder_type: dinov2 # clip_all, clip_global, dinov2, clip_multi
+use_clip_proj: False
+cfg_zero_image_first: False
+dinov2_path: /home/nfs/wyy/models/dinov2
+dinov2_version: dinov2_vitg14
+
+num_inf_images_per_prompt: 1
+num_inference_steps: 50
+scale_factor: 0.18215
+guidance_scale: 1.5
+controlnet_conditioning_scale: 1.0
+
+device: cuda
+mixed_precision: 'fp16' #'no','fp16','bf16 or 'fp8'
+enable_xformers_memory_efficient_attention: True
+gradient_checkpointing: True
+gradient_accumulate_steps: 2
+num_workers: 4
