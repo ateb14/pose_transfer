@@ -122,8 +122,8 @@ class Trainer():
         pbar = tqdm(total=self.args.num_epochs, desc='Epoch', disable=not use_tqdm or not self.accelerator.is_main_process, iterable=range(self.args.num_epochs))
         pbar.update(self.cur_epoch)
         self.model.train()
-        self.eval()
-        exit(0)
+        # self.eval()
+        # exit(0)
 
         for epoch in pbar:
             self.train_epoch(use_tqdm=use_tqdm, inner_collect_fn=inner_collect_fn)
@@ -131,7 +131,8 @@ class Trainer():
             if self.scheduler is not None:
                 self.scheduler.step()
 
-            self.save_state()
+            if self.args.save_state_epoch % (epoch+1) == 0:
+                self.save_state()
             self.eval()
 
             self.cur_epoch += 1
