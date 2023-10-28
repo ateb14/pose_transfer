@@ -89,7 +89,8 @@ class Trainer():
         self.cur_epoch = checkpoint['epoch'] + 1
         self.cur_global_step = checkpoint['global_step']
         self.optimizer.load_state_dict(checkpoint['optimizer_state'])
-        self.scheduler.load_state_dict(checkpoint['scheduler_state'])
+        if self.scheduler is not None:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state'])
         # update partial states
         self.model.load_state_dict(checkpoint['model_state'], strict=False)
 
@@ -121,8 +122,8 @@ class Trainer():
         pbar = tqdm(total=self.args.num_epochs, desc='Epoch', disable=not use_tqdm or not self.accelerator.is_main_process, iterable=range(self.args.num_epochs))
         pbar.update(self.cur_epoch)
         self.model.train()
-        # self.eval()
-        # exit(0)
+        self.eval()
+        exit(0)
 
         for epoch in pbar:
             self.train_epoch(use_tqdm=use_tqdm, inner_collect_fn=inner_collect_fn)
@@ -148,40 +149,23 @@ class Trainer():
                 break
             res = self.model(batch)
             pred_image = res['logits_imgs']
-            if hasattr(self.args, 'enable_detail_controlnet') and self.args.enable_detail_controlnet:
-                detail_map = res['detail_map']
-            ref_image = batch['reference_foreground']
-            ref_bg = batch['reference_background'].permute(0,2,3,1) # batch['reference_background].shape == (bs,c,h,w) as a tensor format image
+            target_pose = batch['target_pose_image']
+            source_image = batch['source_image']
+            diffusion_target_image = batch['diffusion_target_image']
 
             # gather the results from all GPUs
-            pred_image, ref_image, ref_bg = \
-            self.accelerator.gather_for_metrics(pred_image), self.accelerator.gather_for_metrics(ref_image), self.accelerator.gather_for_metrics(ref_bg)
-            
-            if hasattr(self.args, 'enable_detail_controlnet') and self.args.enable_detail_controlnet:
-                detail_map = self.accelerator.gather_for_metrics(detail_map)
-            
-            if 'supervise_pose_map' in batch:
-                    pose_map = batch['supervise_pose_map'].permute(0,2,3,1)
-                    pose_map = self.accelerator.gather_for_metrics(pose_map)
+            pred_image, target_pose, source_image, diffusion_target_image = \
+            self.accelerator.gather_for_metrics(pred_image), self.accelerator.gather_for_metrics(target_pose), \
+            self.accelerator.gather_for_metrics(source_image), self.accelerator.gather_for_metrics(diffusion_target_image)
 
             if self.accelerator.is_main_process: # only save the results in the main process
-                pred_image = (pred_image*255).cpu().numpy().round().astype('uint8')
-                pred_image = pred_image.transpose((0,2,3,1))
-                ref_image = (ref_image*255).cpu().numpy().round().astype('uint8').transpose((0,2,3,1))
-                ref_bg = (ref_bg*255).cpu().numpy().round().astype('uint8')
+                pred_image = (pred_image*255).cpu().numpy().round().astype('uint8').transpose((0,2,3,1))
+                target_pose = (target_pose*255).cpu().numpy().round().astype('uint8').transpose((0,2,3,1))
+                source_image = source_image.cpu().numpy()
+                diffusion_target_image = ((diffusion_target_image * 0.5 + 0.5)*255).cpu().numpy().round().astype('uint8').transpose((0,2,3,1))
 
                 line = 255*np.ones((pred_image.shape[0],pred_image.shape[1],5,3))
-                img = np.concatenate([pred_image, line, ref_image,line, ref_bg], axis=2)
-
-                if hasattr(self.args, 'enable_detail_controlnet') and self.args.enable_detail_controlnet:
-                    detail_map = (detail_map*255).cpu().numpy().round().astype('uint8').transpose((0,2,3,1))
-                    if detail_map.shape[-1] == 4:
-                        detail_map = detail_map[:,:,:,:3]
-                    img = np.concatenate([img, line, detail_map], axis=2)
-
-                if 'supervise_pose_map' in batch:
-                    pose_map = (pose_map*255).cpu().numpy().round().astype('uint8')
-                    img = np.concatenate([img, line, pose_map], axis=2)
+                img = np.concatenate([source_image,line, target_pose,line,diffusion_target_image,line,pred_image], axis=2)
 
             
                 os.makedirs(os.path.join(self.args.exp_root_dir, 'results', self.args.exp_name, f'epoch_{self.cur_epoch}_global_step_{self.cur_global_step}'), exist_ok=True)

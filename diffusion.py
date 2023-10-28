@@ -35,7 +35,6 @@ class Net(nn.Module):
             self.sample_noise_scheduler = PNDMScheduler.from_pretrained(
                 args.pretrained_model_path, subfolder='scheduler')
         
-        
         # load models
         if args.image_encoder == 'clip':
             self.image_feature_extractor = CLIPImageProcessor.from_pretrained(
@@ -61,11 +60,17 @@ class Net(nn.Module):
             args.pretrained_model_path, subfolder='vae'
         )
         print('VAE loaded')
+
         
         self.unet = UNet2DConditionModel.from_pretrained(
             args.pretrained_model_path, subfolder='unet'
         )
-        self.unet.set_conv_in(in_channels=7)
+        if self.args.pose_injection == 'concat_before_conv_in':
+            self.unet.set_conv_in(in_channels=8)
+        elif self.args.pose_injection == 'addition_after_conv_in':
+            raise NotImplementedError
+        else:
+            raise NotImplementedError
         print('UNet loaded')
 
         if self.args.enable_xformers_memory_efficient_attention:
@@ -419,8 +424,9 @@ class Net(nn.Module):
         return latents
     
     def forward_train(self, inputs):
-        image = inputs['image'].to(self.device) # (bs, c, h, w)
-        img_encoder_pre_ref_fg = inputs['image_encoder_preprocessed_reference_foreground'].to(self.device)
+        image = inputs['diffusion_target_image'].to(self.device) # (bs, c, h, w)
+        img_encoder_pre_ref_fg = inputs['image_encoder_preprocessed_source_image'].to(self.device)
+        target_pose_image = inputs['target_pose_image'].to(self.device)
         bs = image.shape[0]
 
         # 1.encode the reference image for cross attention
@@ -438,15 +444,25 @@ class Net(nn.Module):
         
         # 2.prepare the initial latents for diffusion process
         latents = self.vae_encode_image(image).to(dtype=self.dtype)
+        pose_map_latents = self.vae_encode_image(target_pose_image).to(dtype=self.dtype)
         noise = torch.randn_like(latents)
+
+        # cfg sampling
+        thresholds = torch.rand(bs, device=self.device)
+        thresholds = thresholds[:, None, None]
+        ref_fg_emb = torch.where(thresholds >= self.args.cfg_eta, ref_fg_emb, 0.)
+        thresholds = thresholds.unsqueeze(-1)
+        pose_map_latents = torch.where(thresholds >= self.args.cfg_eta, pose_map_latents, 0.)
 
         # 3.sample the timesteps and do the forward diffusion process
         timesteps = self.sample_timesteps(bs)
-        noisy_latents = self.train_noise_scheduler.add_noise(latents, noise, timesteps)
+        noisy_latents = self.train_noise_scheduler.add_noise(latents, noise, timesteps) # pose map should not be added noise
 
         # 4. concat pose and noisy image
-        noisy_latents = torch.concat([noisy_latents, torch.ones(bs,3,32,32).to(self.device)], dim=1)
-        print(f'noisy_latents shape: {noisy_latents.shape}')
+        if self.args.pose_injection == 'concat_before_conv_in':
+            noisy_latents = torch.concat([noisy_latents, pose_map_latents], dim=1)
+        else:
+            raise NotImplementedError
 
         # 5. main unet
         pred = self.unet(
@@ -468,10 +484,9 @@ class Net(nn.Module):
     
     @torch.no_grad()
     def forward_sample(self, inputs):
-        gt_image = inputs['image']
-        img_encoder_pre_ref_fg = inputs['image_encoder_preprocessed_reference_foreground'].to(self.device)
-        ref_fg = inputs['reference_foreground'].to(self.device)
-        ref_bg = inputs['reference_background'].to(self.device)
+        gt_image = inputs['diffusion_target_image']
+        img_encoder_pre_ref_fg = inputs['image_encoder_preprocessed_source_image'].to(self.device)
+        target_pose_image = inputs['target_pose_image'].to(self.device)
         bs,_,h,w = gt_image.shape
         do_classifier_free_guidance = self.guidance_scale > 1.0
         outputs = dict()
@@ -503,6 +518,10 @@ class Net(nn.Module):
             latents=None,
         )
 
+        # 3. concat pose and noisy image
+        if self.args.pose_injection == 'concat_before_conv_in':
+            pose_map_latents = self.vae_encode_image(target_pose_image).to(dtype=self.dtype)
+
         # 4.denoising loop
         self.sample_noise_scheduler.set_timesteps(
             self.args.num_inference_steps, device=self.device)
@@ -514,9 +533,14 @@ class Net(nn.Module):
             for i, t in enumerate(timesteps):
                 # expand the latents if we are doing classifier free guidance
                 if do_classifier_free_guidance:
-                    latents_input = torch.cat([latents] * 2)
+                    # latents_input = torch.cat([latents]*2)
+                    if self.args.pose_injection == 'concat_before_conv_in':
+                        latents_and_pose = torch.concat([latents, pose_map_latents], dim=1)
+                        latents_and_zeros = torch.concat([latents, torch.zeros_like(pose_map_latents)], dim=1)
+                        latents_input = torch.concat([latents_and_pose, latents_and_zeros])
                 else:
-                    latents_input = latents
+                    if self.args.pose_injection == 'concat_before_conv_in':
+                        latents_input = torch.concat([latents, pose_map_latents], dim=1)
                 # some schedulers that need to scale the denoising model input depending on the current timestep.
                 latents_input = self.sample_noise_scheduler.scale_model_input(latents_input, t) 
 
@@ -604,7 +628,7 @@ class Net(nn.Module):
 
 if __name__ == '__main__':
     # parse args
-    import argparse, os
+    import argparse
     from yaml import safe_load
     from accelerate.utils import set_seed
     parser = argparse.ArgumentParser()
@@ -620,12 +644,16 @@ if __name__ == '__main__':
 
     device = 'cuda:1'
     model = Net(args).to(device)
+    model.train()
     print(f'UNet conv_in',model.unet.conv_in)
 
-    image = torch.zeros((1,3,256,256)).to(device)
-    inputs = {'source_image': image, 
-                'target_image': image.copy(),
-                'target_pose_coordinate': torch.zeros((1,3,256,256)).to(device),
-                'image_encoder_preprocessed_source_image': torch.zeros((1,3,224,224)).to(device)
-                }
-    print(model(inputs)['loss_total'])
+    from dataset import DeepFashionDataset
+    from torch.utils.data import DataLoader
+    dataset = DeepFashionDataset(args, 'train', args.data_root_dir)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+    
+    for i, batch in enumerate(dataloader):
+        outputs = model(batch)
+
+        if i == 0:
+            break

@@ -20,8 +20,8 @@ class DeepFashionDataset(Dataset):
 
         self.diffusion_transform = transforms.Compose([
             transforms.ToTensor(), # [0, 1]
-            transforms.RandomResizedCrop(self.image_size, scale=(1.0, 1.0),ratio=(1., 1.), \
-                interpolation=transforms.InterpolationMode.BILINEAR, antialias=True),
+            # transforms.RandomResizedCrop(self.image_size, scale=(1.0, 1.0),ratio=(1., 1.), \
+            #     interpolation=transforms.InterpolationMode.BILINEAR, antialias=True),
             transforms.Normalize(mean=[0.5], std=[0.5]), # [-1, 1] following N(0,I)
         ])
 
@@ -44,8 +44,8 @@ class DeepFashionDataset(Dataset):
 
         self.control_transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.RandomResizedCrop((64,44), scale=(1.0, 1.0),ratio=(1., 1.), \
-                interpolation=transforms.InterpolationMode.BILINEAR, antialias=False),
+            # transforms.RandomResizedCrop((64,44), scale=(1.0, 1.0),ratio=(1., 1.), \
+            #     interpolation=transforms.InterpolationMode.BILINEAR, antialias=False),
         ])
 
     def __len__(self):
@@ -77,7 +77,7 @@ class DeepFashionDataset(Dataset):
             'target_image': target_image,
             'diffusion_target_image': self.diffusion_transform(target_image), # for diffusion
             'target_pose_coordinate': target_pose_coordinate,
-            'target_pose_image': target_pose_image,
+            'target_pose_image': self.control_transform(target_pose_image),
             'image_encoder_preprocessed_source_image': self.image_encoder_transform(stitch_to_square_middle(source_image)), # for image encoder
         }
     
@@ -109,20 +109,28 @@ if __name__ == '__main__':
     # print(dataset[6304]['source_image'].shape)
     # exit(0)
 
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=48)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=48)
     from tqdm import tqdm as tdqm
 
     for i, data in tdqm(enumerate(dataloader), total=len(dataloader)):
         source_image = data['source_image']
-        target_image = data['target_image']
+        diffusion_target_image = data['diffusion_target_image']
         image_encoder_preprocessed_source_image = data['image_encoder_preprocessed_source_image']
         target_pose_coordinate = data['target_pose_coordinate']
         image_encoder_preprocessed_source_image = data['image_encoder_preprocessed_source_image']
-        target_pose_image = data['target_pose_image']
-        print(source_image.shape,target_pose_image.shape,image_encoder_preprocessed_source_image.shape,target_pose_image.shape, image_encoder_preprocessed_source_image.shape)
+        target_pose_image = (data['target_pose_image'] * 255).numpy().round().astype('uint8').transpose((0,2,3,1))
+        diffusion_target_image = ((diffusion_target_image * 0.5 + 0.5)*255).cpu().numpy().round().astype('uint8').transpose((0,2,3,1))
+        print(source_image.shape,target_pose_image.shape,image_encoder_preprocessed_source_image.shape,diffusion_target_image.shape)
+
+        # mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)
+        image_encoder_preprocessed_source_image[:,0,:,:] = image_encoder_preprocessed_source_image[:,0,:,:] * 0.229 + 0.485
+        image_encoder_preprocessed_source_image[:,1,:,:] = image_encoder_preprocessed_source_image[:,1,:,:] * 0.224 + 0.456
+        image_encoder_preprocessed_source_image[:,2,:,:] = image_encoder_preprocessed_source_image[:,2,:,:] * 0.225 + 0.406
+        image_encoder_preprocessed_source_image = (image_encoder_preprocessed_source_image * 255).numpy().round().astype('uint8').transpose((0,2,3,1))
 
         cv2.imwrite(f'./test/{i}_source_image.png', source_image[0].numpy())
-        cv2.imwrite(f'./test/{i}_target_image.png', target_image[0].numpy())
-        cv2.imwrite(f'./test/{i}_target_pose_image.png', target_pose_image[0].numpy())
+        cv2.imwrite(f'./test/{i}_target_image.png', diffusion_target_image[0])
+        cv2.imwrite(f'./test/{i}_target_pose_image.png', target_pose_image[0])
+        cv2.imwrite(f'./test/{i}_image_encoder_preprocessed_source_image.png', image_encoder_preprocessed_source_image[0])
         exit(0)
 
