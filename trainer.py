@@ -122,8 +122,8 @@ class Trainer():
         pbar = tqdm(total=self.args.num_epochs, desc='Epoch', disable=not use_tqdm or not self.accelerator.is_main_process, iterable=range(self.args.num_epochs))
         pbar.update(self.cur_epoch)
         self.model.train()
-        self.eval()
-        exit(0)
+        # self.eval()
+        # exit(0)
 
         for epoch in pbar:
             self.train_epoch(use_tqdm=use_tqdm, inner_collect_fn=inner_collect_fn)
@@ -140,7 +140,7 @@ class Trainer():
 
     @torch.no_grad()
     def eval(self, use_tqdm=True, inner_collect_fn=None):
-        logger.info(f'Start evaluation at global step {self.cur_global_step}')
+        logger.info(f'Start evaluation at global step {self.cur_global_step}, epoch {self.cur_epoch}...')
         self.model.eval()
         pbar = tqdm(total=self.args.eval_image_num, desc='Eval per epoch', disable=not use_tqdm, \
                     iterable=enumerate(self.dataloader_eval))

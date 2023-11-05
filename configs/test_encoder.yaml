@@ -1,11 +1,11 @@
 exp_root_dir: /home/wyy/exp/pose_transfer
-exp_name: test_ca
+exp_name: test_encoder
 
 pretrained_model_path: /home/nfs/wyy/models/sd-image-variations-diffusers
 data_root_dir: /home/nfs/wyy/data/deepfashion/Data
 seed: 42
 
-load_state: True
+load_state: False
 load_state_exp_name: test_ca
 load_state_epoch: 339
 
@@ -22,7 +22,7 @@ eval_image_num: 4
 
 # how to inject pose control?
 # 1. ContolNet 2. Concatenate (both after vae encoder) 3. Addition(After conv_in in unet)
-pose_injection: concat_before_conv_in # addition_after_conv_in
+pose_injection: addition_after_conv_in # concat_before_conv_in, addition_after_conv_in
 
 image_encoder: dinov2
 refer_sdvae: True

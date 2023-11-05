@@ -3,6 +3,12 @@ import numpy as np
 import cv2
 import math
 import os
+import torch.nn as nn
+
+def zero_module(module):
+    for p in module.parameters():
+        nn.init.zeros_(p)
+    return module
 
 def setup_logging(run_name, root_dir):
     os.makedirs(os.path.join(root_dir, "ckpts", run_name), exist_ok=True)

@@ -12,6 +12,9 @@ from diffusers.utils.import_utils import is_xformers_available
 import PIL.Image
 from dinov_2 import get_dinov2_model
 from UNet2D import UNet2DConditionModel
+import cv2
+from typing import Tuple
+from utils import zero_module
 
 
 class Net(nn.Module):
@@ -68,7 +71,7 @@ class Net(nn.Module):
         if self.args.pose_injection == 'concat_before_conv_in':
             self.unet.set_conv_in(in_channels=8)
         elif self.args.pose_injection == 'addition_after_conv_in':
-            raise NotImplementedError
+            self.pose_encoder = PoseEncoder()
         else:
             raise NotImplementedError
         print('UNet loaded')
@@ -109,7 +112,11 @@ class Net(nn.Module):
         # freeze unet
         self.unet.train()
         self.unet.requires_grad_(False)
-        self.unet.conv_in.requires_grad_(True) # conv_in is modified
+        if self.args.pose_injection == 'concat_before_conv_in':
+            self.unet.conv_in.requires_grad_(True) # conv_in is modified
+        elif self.args.pose_injection == 'addition_after_conv_in':
+            self.pose_encoder.train()
+            self.pose_encoder.requires_grad_(True)
         if self.args.unet_trainable_module == 'all':
             for name, para in self.unet.named_parameters():
                 para.requires_grad_(True)
@@ -428,6 +435,14 @@ class Net(nn.Module):
         img_encoder_pre_ref_fg = inputs['image_encoder_preprocessed_source_image'].to(self.device)
         target_pose_image = inputs['target_pose_image'].to(self.device)
         bs = image.shape[0]
+        
+        debug = 0
+        if debug:
+            tmp_img = ((image * 0.5 + 0.5)*255).cpu().numpy().round().astype('uint8').transpose((0,2,3,1))
+            cv2.imwrite(f'./test/target_image1.png', tmp_img[0])
+            cv2.imwrite(f'./test/target_image2.png', tmp_img[1])
+            cv2.imwrite(f'./test/target_image3.png', tmp_img[2])
+
 
         # 1.encode the reference image for cross attention
         if self.args.ref_encoder_type == 'clip_global':
@@ -444,30 +459,49 @@ class Net(nn.Module):
         
         # 2.prepare the initial latents for diffusion process
         latents = self.vae_encode_image(image).to(dtype=self.dtype)
-        pose_map_latents = self.vae_encode_image(target_pose_image).to(dtype=self.dtype)
         noise = torch.randn_like(latents)
+
 
         # cfg sampling
         thresholds = torch.rand(bs, device=self.device)
         thresholds = thresholds[:, None, None]
         ref_fg_emb = torch.where(thresholds >= self.args.cfg_eta, ref_fg_emb, 0.)
-        thresholds = thresholds.unsqueeze(-1)
-        pose_map_latents = torch.where(thresholds >= self.args.cfg_eta, pose_map_latents, 0.)
 
         # 3.sample the timesteps and do the forward diffusion process
         timesteps = self.sample_timesteps(bs)
         noisy_latents = self.train_noise_scheduler.add_noise(latents, noise, timesteps) # pose map should not be added noise
 
-        # 4. concat pose and noisy image
+        if debug:
+            tmp_img = self.vae_decode_image(noisy_latents)
+            tmp_img = (tmp_img*255).float().cpu().numpy().round().transpose((0,2,3,1))
+            cv2.imwrite('test/noisy_img1.jpg', tmp_img[0])
+            cv2.imwrite('test/noisy_img2.jpg', tmp_img[1])
+            cv2.imwrite('test/noisy_img3.jpg', tmp_img[2])
+            
+            exit(0)
+        # 4. deal with pose maps
+        thresholds = thresholds.unsqueeze(-1)
         if self.args.pose_injection == 'concat_before_conv_in':
+            pose_map_latents = self.vae_encode_image(target_pose_image).to(dtype=self.dtype)
+            pose_map_latents = torch.where(thresholds >= self.args.cfg_eta, pose_map_latents, 0.)
             noisy_latents = torch.concat([noisy_latents, pose_map_latents], dim=1)
+        elif self.args.pose_injection == 'addition_after_conv_in':
+            cfg_pose_image = torch.where(thresholds >= self.args.cfg_eta, target_pose_image, 0.)
+            pose_feature = self.pose_encoder(cfg_pose_image)
         else:
             raise NotImplementedError
 
         # 5. main unet
-        pred = self.unet(
-            noisy_latents, timesteps, encoder_hidden_states=ref_fg_emb,
-        ).sample
+        if self.args.pose_injection == 'concat_before_conv_in':
+            pred = self.unet(
+                noisy_latents, timesteps, encoder_hidden_states=ref_fg_emb,
+            ).sample
+        elif self.args.pose_injection == 'addition_after_conv_in':
+            pred = self.unet(
+                noisy_latents, timesteps, encoder_hidden_states=ref_fg_emb, feature_added_after_conv_in=pose_feature,
+            ).sample
+        else:
+            raise NotImplementedError
 
         # 6. calculate loss
         if self.train_noise_scheduler.config.prediction_type == "epsilon": # default
@@ -518,9 +552,15 @@ class Net(nn.Module):
             latents=None,
         )
 
-        # 3. concat pose and noisy image
+        # 3. deal with pose maps
         if self.args.pose_injection == 'concat_before_conv_in':
             pose_map_latents = self.vae_encode_image(target_pose_image).to(dtype=self.dtype)
+        elif self.args.pose_injection == 'addition_after_conv_in':
+            if do_classifier_free_guidance:
+                target_pose_image = torch.cat([torch.zeros_like(target_pose_image), target_pose_image])
+            pose_feature = self.pose_encoder(target_pose_image)
+        else:
+            raise NotImplementedError
 
         # 4.denoising loop
         self.sample_noise_scheduler.set_timesteps(
@@ -537,18 +577,33 @@ class Net(nn.Module):
                     if self.args.pose_injection == 'concat_before_conv_in':
                         latents_and_pose = torch.concat([latents, pose_map_latents], dim=1)
                         latents_and_zeros = torch.concat([latents, torch.zeros_like(pose_map_latents)], dim=1)
-                        latents_input = torch.concat([latents_and_pose, latents_and_zeros])
+                        latents_input = torch.concat([latents_and_zeros, latents_and_pose])
+                    elif self.args.pose_injection == 'addition_after_conv_in':
+                        latents_input = torch.concat([torch.zeros_like(latents), latents])
+                    else:
+                        raise NotImplementedError
                 else:
                     if self.args.pose_injection == 'concat_before_conv_in':
                         latents_input = torch.concat([latents, pose_map_latents], dim=1)
+                    elif self.args.pose_injection == 'addition_after_conv_in':
+                        latents_input = latents
+                    else:
+                        raise NotImplementedError
                 # some schedulers that need to scale the denoising model input depending on the current timestep.
                 latents_input = self.sample_noise_scheduler.scale_model_input(latents_input, t) 
 
                 # unet
-                pred = self.unet(
-                    latents_input,
-                    t,
-                    encoder_hidden_states=ref_fg_emb).sample.to(dtype=self.dtype)
+                if self.args.pose_injection == 'concat_before_conv_in':
+                    pred = self.unet(
+                        latents_input,
+                        t,
+                        encoder_hidden_states=ref_fg_emb).sample.to(dtype=self.dtype)
+                elif self.args.pose_injection == 'addition_after_conv_in':
+                    pred = self.unet(
+                        latents_input,
+                        t,
+                        encoder_hidden_states=ref_fg_emb,
+                        feature_added_after_conv_in=pose_feature)
                 
                 # cfg guidance
                 if do_classifier_free_guidance:
@@ -625,6 +680,42 @@ class Net(nn.Module):
 
     def set_progress_bar_config(self, **kwargs):
         self._progress_bar_config = kwargs
+
+class PoseEncoder(nn.Module):
+    # Borrowed from ControlNet of diffusers
+    def __init__(
+        self,
+        in_channel: int = 3,
+        out_channel: int = 320,
+        block_out_channels: Tuple[int] = (16, 32, 96, 256),
+    ):
+        super().__init__()
+
+        self.conv_in = nn.Conv2d(in_channel, block_out_channels[0], kernel_size=3, padding=1)
+
+        self.blocks = nn.ModuleList([])
+
+        for i in range(len(block_out_channels) - 1):
+            channel_in = block_out_channels[i]
+            channel_out = block_out_channels[i + 1]
+            self.blocks.append(nn.Conv2d(channel_in, channel_in, kernel_size=3, padding=1))
+            self.blocks.append(nn.Conv2d(channel_in, channel_out, kernel_size=3, padding=1, stride=2))
+
+        self.conv_out = zero_module(
+            nn.Conv2d(block_out_channels[-1], out_channel, kernel_size=3, padding=1)
+        )
+
+    def forward(self, conditioning):
+        embedding = self.conv_in(conditioning)
+        embedding = F.silu(embedding)
+
+        for block in self.blocks:
+            embedding = block(embedding)
+            embedding = F.silu(embedding)
+
+        embedding = self.conv_out(embedding)
+
+        return embedding
 
 if __name__ == '__main__':
     # parse args
